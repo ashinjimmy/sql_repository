@@ -1,0 +1,667 @@
+ ====================================== QUERIES ==================================
+ 
+ 1. BASICS 
+ ********************************
+  
+SELECT AA.meter_number,AA.tcp_ip,AA.tcp_port,AA.sim_type,BB.manufacturer_name,BB.firmware from hes.meter_master AA
+left join hes.data_nameplate BB on AA.meter_number=BB.meter_number;
+
+SELECT * from meter_group
+
+SELECT * from meter_job AA, meter_job_list BB WHERE AA.id = BB.job_parent_id
+
+select BB.job_type from meter_job AA, meter_job_list BB where AA.id=BB.job_parent_id
+
+select AA.id,count(*) from meter_job AA, meter_job_list BB where AA.id=BB.job_parent_id GROUP BY AA.id
+
+SELECT * from meter_job where id = '273'
+
+SELECT  AA.job_name, AA.job_description, BB.start_time, BB.status from meter_job AA, meter_job_list BB where AA.id = BB.job_parent_id ORDER BY AA.id DESC;
+
+SELECT * from meter_group where  id = '288';
+
+SELECT scheduler ->>  'scheduledTime' AS scheduled_time  from hes.meter_job where scheduler is not null  ORDER BY scheduled_time DESC;
+
+
+SELECT id,job_name, job_description, to_char(to_timestamp(scheduler ->>  'scheduledTime','YYYY-MM-DD HH24-MI-SS'),'DD-MM-YYYY HH12-MI AM') AS scheduled_time  from hes.meter_job   
+where scheduler is not null and  to_timestamp(scheduler ->>  'scheduledTime','YYYY-MM-DD HH24-MI-SS') >now()  ORDER BY scheduled_time ASC;                                                       
+
+select now()
+
+select to_char(time_stamp,'YYYYMM'),* from hes.meter_job    where  to_char(time_stamp,'YYYYMM') = '202005'; -- WRONG
+
+select to_char(time_stamp,'YYYYMM'),* from hes.meter_job    where  time_stamp  >= '2020-05-01 00:00:00' and  time_stamp  <= '2020-06-01 00:00:00' 
+
+select * from hes.meter_job    where  to_char(time_stamp,'MM-YYYY-DD HH24:MI:SS') = '05-2020-27 13:23:10'; -- WRONG
+ 
+select * from hes.meter_job    where  time_stamp = to_timestamp('05-2020-27 13:23:10','MM-YYYY-DD HH24:MI:SS');
+
+
+select to_date('2020-02-02 23:34:54','YYYY-MM-DD HH24-MI-SS')
+
+select to_char(to_timestamp(scheduler ->>  'scheduledTime','YYYY-MM-DD HH24-MI-SS'),'DD-MM-YYYY HH24-MI-SS')
+	
+select  * from    hes.meter_job   where time_stamp<now()
+
+select to_char(time_stamp,'YYYYMM'),* from hes.meter_master    where  to_char(time_stamp,'YYYYMM') = '202005'; -- WRONG
+
+select to_char(time_stamp,'YYYYMM'),* from hes.meter_master    where  time_stamp  >= '2020-05-01 00:00:00' and  time_stamp  <= '2020-06-01 00:00:00' 
+
+
+ 
+0 -- Running 
+1 -- Success
+2 -- Failed
+
+-------------------------------------------------------------------------------------------------------------
+
+ 2.  FETCHING JSON {OBJECT/ARRAY}  BASED ON THE KEY 
+ ***************************************************************
+Sample 1
+========
+SELECT (meter_data::json->'instantaneous') as dataval FROM cdf_mobile_data;
+
+SELECT (meter_data::json->'instantaneous') ::json->'headerDisc' as dataval FROM cdf_mobile_data;
+
+SELECT (meter_data::json->'instantaneous') ::json->'data' as dataval FROM cdf_mobile_data;
+
+Sample 2
+=======
+
+SELECT (meter_data::json->'bills') FROM cdf_mobile_data;
+
+SELECT (meter_data::json->'bills')::json->'headerDisc' as dataval FROM cdf_mobile_data;
+
+SELECT (meter_data::json->'bills')::json->'data' as dataval FROM cdf_mobile_data;
+
+Note -- Here meter_data is the column name & instantaneous,  data, headerDisc are the keys and its associated values will fetch while the about queries exicutes. 
+
+----------------------------------------------------------------------------------------------------------------
+
+  3. ALTER TABLE {ADDITION OF EXTRA COLUMN TO THE TABLE }
+  *********************************************************************
+  
+ALTER TABLE hes.data_instantenous_push  
+ADD COLUMN server_name VARCHAR(20), ADD COLUMN comm_host VARCHAR(50);
+
+ALTER TABLE hes.meter_master  
+ADD COLUMN server_name VARCHAR(20); 
+
+ALTER TABLE hes.system_base_url  
+ADD COLUMN server_name VARCHAR(20); 
+
+ALTER TABLE hes.data_alarm  
+ADD COLUMN server_name VARCHAR(20);  
+
+ALTER TABLE hes.comm_heartbeat  
+ADD COLUMN server_name VARCHAR(20);  
+
+------------------------------------------------------------------------------------------------------------------
+
+     4. BASICS JOINS/ GROUPING/ CASTING
+     *********************************************************************
+
+Select count(*)
+from meter_job;
+
+
+
+
+Select * 
+from hes.meter_job 
+limit 2 ;
+
+
+
+
+select * 
+from hes.meter_job_list
+limit 2;
+
+
+
+
+SELECT *
+FROM
+(select job_type,job_name, time_stamp 
+from hes.meter_job 
+order by time_stamp desc 
+limit 10) AA;
+
+
+
+
+SELECT * 
+FROM
+(select id,job_type,job_name
+from hes.meter_job 
+order by time_stamp desc 
+limit 10) AA 
+
+LEFT JOIN hes.meter_job_list BB
+ON AA.id= BB.job_parent_id;
+
+
+
+
+Select * 
+from 
+(SELECT id,meter_number, assign_time, start_time, finish_time, 
+attempts
+FROM hes.meter_job_list
+WHERE job_parent_id = 2633 and status = 1 
+ORDER BY id DESC) AA;
+
+
+-- CASTING INTEGER TO VARCHAR
+
+Select * 
+from 
+(SELECT id,meter_number, assign_time, start_time, finish_time, attempts
+FROM hes.meter_job_list
+WHERE cast(job_parent_id as varchar) like '%2' and status = 1 
+ORDER BY id DESC) AA;
+
+
+SELECT job_name
+from hes.meter_job 
+where  id = 2633;
+
+
+
+
+
+
+-- Just goupign and counting --
+
+
+
+SELECT AA.id,AA.job_type,AA.job_name, count(AA.job_type) as totalMeters
+
+FROM
+(select id,job_type,job_name
+from hes.meter_job 
+order by time_stamp desc 
+limit 1000) AA 
+
+LEFT JOIN hes.meter_job_list BB
+ON AA.id= BB.job_parent_id 
+
+GROUP BY AA.id,AA.job_type,AA.job_name ;
+
+
+
+-----------------------------------------------------------------------------
+
+
+
+SELECT AA.id,AA.job_type,AA.job_name, count(*) as totalMeters 
+FROM
+
+(select id,job_type,job_name
+from hes.meter_job 
+order by time_stamp desc 
+limit 1000) AA
+
+LEFT JOIN hes.meter_job_list BB
+ON AA.id= BB.job_parent_id 
+
+GROUP BY AA.id,AA.job_type,AA.job_name ;
+
+
+
+-----------------------------
+-- Recent jobs --
+
+
+
+SELECT 
+AA.id,AA.job_type,AA.job_name,AA.priority, AA.child_type,AA.added_by,AA.time_stamp,AA.edited_by,AA.edited_time,
+AA.source, count(*)  as totalMeters,
+
+COUNT(CASE WHEN BB.STATUS!=0 THEN 1 END) as completed, 
+
+COUNT(CASE WHEN BB.STATUS=1 THEN 1 END) as success ,
+
+COUNT(CASE WHEN BB.STATUS=2 THEN 1 END) as failed, 
+BB.status 
+FROM
+(select id,job_type,job_name,priority,
+child_type,added_by,time_stamp,edited_by,edited_time,source 
+
+from hes.meter_job 
+order by time_stamp desc
+limit 10) AA 
+
+LEFT JOIN hes.meter_job_list BB
+ 
+ON AA.id= BB.job_parent_id 
+
+GROUP BY AA.id,AA.job_type,AA.job_name,AA.priority, 
+AA.child_type,AA.added_by,AA.time_stamp,AA.edited_by,AA.edited_time,AA.source, BB.status;
+
+
+
+------------------------------------------
+--  Running job ---
+
+
+
+SELECT * 
+FROM
+
+(SELECT AA.id,AA.job_type,AA.job_name, 
+count(*)  as totalMeters,
+
+COUNT(CASE WHEN BB.STATUS!=0 THEN 1 END) as completed, 
+COUNT(CASE WHEN BB.STATUS=1 THEN 1 END) as success 
+
+FROM 
+(select id,job_type,job_name from hes.meter_job  ) AA 
+LEFT JOIN hes.meter_job_list BB ON AA.id= BB.job_parent_id 
+
+GROUP BY AA.id,AA.job_type,AA.job_name ) AAA
+
+WHERE AAA.totalMeters>AAA.completed;
+
+
+
+----------------------------------------------------------
+
+--  Running job count---
+
+
+Select COUNT (*)
+From
+(SELECT * 
+FROM 
+(SELECT 
+AA.id,AA.job_type,AA.job_name,AA.priority, 
+AA.child_type,AA.added_by,
+MIN(AA.time_stamp) as startedTime,
+AA.source,
+count(*)  as totalMeters,
+COUNT(CASE WHEN BB.STATUS!=0 THEN 1 END) as completed,
+
+COUNT(CASE WHEN BB.STATUS=1 THEN 1 END) as success,
+
+COUNT(CASE WHEN BB.STATUS =2 THEN 1 END) as failed, 
+MAX(BB.finish_time) AS finishTime 
+
+FROM (select id,job_type,job_name,priority,child_type,added_by,time_stamp,source 
+from hes.meter_job  ) 
+AA 
+LEFT JOIN hes.meter_job_list BB 
+ON AA.id= BB.job_parent_id 
+
+GROUP BY AA.id,AA.job_type,AA.job_name,AA.priority, AA.child_type,AA.added_by,AA.time_stamp,AA.source 
+
+ORDER BY time_stamp ASC) AAA 
+WHERE AAA.totalMeters>AAA.completed ) AAAA;
+
+
+
+
+-- or 
+
+
+
+
+Select count(*)  
+from
+
+(select
+AA.id,AA.time_stamp,
+count(*) AS totalMeters,
+
+COUNT(CASE WHEN BB.STATUS!=0 THEN 1 END) as completed  
+
+from
+ (select id,time_stamp 
+from hes.meter_job)AA 
+
+LEFT JOIN hes.meter_job_list BB on AA.id = BB.job_parent_id 
+
+GROUP BY AA.id,AA.time_stamp) AAA 
+
+WHERE AAA.totalMeters > AAA.completed
+
+
+
+-------------------------------------------------
+
+
+
+SELECT COUNT (*) 
+FROM 
+
+(select id, time_stamp, to_char(to_timestamp(scheduler ->>  'scheduledTime','YYYY-MM-DD HH24-MI-SS'),'DD-MM-YYYY HH12-MI AM') 
+
+AS scheduled_time 
+from hes.meter_job   
+
+where scheduler is not null 
+and  to_timestamp(scheduler ->>  'scheduledTime','YYYY-MM-DD HH24-MI-SS') >now()  
+
+ORDER BY scheduled_time ASC ) AA
+
+
+
+
+
+
+select * from hes.meter_job_list order by id desc limit 25
+
+
+
+select * from hes.meter_job_list where job_parent_id = 262
+
+5
+
+select * from hes.meter_job where job_name = 'HEART HIGH'
+
+
+
+select * from hes.meter_job  where id='2470'
+
+
+
+
+select job_parent_id, meter_number from hes.meter_job_list where status=2
+
+
+
+select * FROM hes.meter_job where scheduler is not null;
+
+
+
+select  * from hes.meter_job_list where job_parent_id = 2641;
+
+
+
+select  * from hes.meter_job_list where job_parent_id BETWEEN 2636 and 2641 
+
+
+ ------------------------------------------------------------------------------------------------------------------
+
+     4. JOB DASHBOARD JOB COUNTS
+     *********************************************************************
+
+
+
+
+
+SELECT 
+COUNT(*)jobs,COUNT(CASE WHEN running>0 THEN 1 END ) runningJobs,
+COUNT(case when running=0 THEN 1 END ) finishedJobs,
+
+--count(case when excptions>0 and running=0 then 1 end )excptionJobs 
+
+SUM(total)totalMeterJobs,
+
+SUM(running)runningMeterJobs,
+
+SUM(excptions)exceptionMeterJobs,
+
+SUM(success)successMeterJobs 
+FROM 
+
+(SELECT 
+AA.ID as totalJobs,
+COUNT(BB.status) AS total,
+
+COUNT(CASE WHEN BB.status = 0 THEN 1 END)AS running,
+
+COUNT(CASE WHEN BB.status = 2 THEN 1 END)AS excptions,
+
+COUNT(CASE WHEN BB.status = 1 THEN 1 END)AS success 
+
+FROM
+ (SELECT * FROM hes.meter_job where time_stamp >  
+CURRENT_DATE - INTERVAL'33' DAY) AA
+ LEFT JOIN 
+hes.meter_job_list BB
+ON AA.id=BB.job_parent_id 
+GROUP BY AA.ID) CCC ;
+
+------------------------------------------------------------
+--Job TYe wise 
+
+
+SELECT 
+COUNT(DISTINCT job_parent_id) AS id, job_type, 
+
+COUNT(*) AS Jobs,
+COUNT(CASE WHEN status = 0 then 1 end ) AS running,
+
+COUNT(CASE WHEN status = 1 then 1 end ) AS completed,
+
+COUNT(CASE WHEN status = 2 then 1 end ) AS failed,
+
+COUNT(DISTINCT meter_number) AS meters,
+
+avg(case when status=1 
+then (finish_time - start_time) end )
+avg_exe_time
+FROM hes.meter_job_list 
+
+WHERE assign_time > CURRENT_DATE - INTERVAL' 7' DAY 
+
+GROUP BY job_type;
+
+-------------------------------------------------------
+
+SELECT 
+COUNT(  meter_number) AS  meters,
+
+COUNT(CASE WHEN status = 0 then 1 end ) AS running,
+
+COUNT(CASE WHEN status = 1 then 1 end ) AS completed,
+
+COUNT(CASE WHEN status = 2 then 1 end ) AS failed
+
+FROM hes.meter_job_list 
+
+WHERE assign_time >   CURRENT_DATE - INTERVAL'30' DAY 
+GROUP BY meter_number;
+
+---------------------------------------------------------
+
+-- TERMINATION 
+
+SELECT count(*)jobs,count(case when running>0 then 1 end )runningJobs,  
+					  
+count(case when running=0 then 1 end )finishedJobs,  
+					  
+sum(total)totalMeterJobs,  
+					  
+sum(running)runningMeterJobs,  
+					  
+sum(excptions)exceptionMeterJobs,  
+					  
+sum(success)successMeterJobs, 
+					  
+sum(terminate)terminatedMtrJobs
+					 
+FROM   
+					  
+(SELECT AA.ID as totalJobs,  
+					  
+count(BB.status) as total,  
+					  
+COUNT(CASE WHEN BB.status = 0 then 1 end)as running,  
+					  
+COUNT(CASE WHEN BB.status = 2 and error != 'TERMINATION' then 1 end)as excptions,  
+					  
+COUNT(CASE WHEN BB.status = 1 then 1 end)as success, 
+					  
+COUNT(CASE WHEN BB.status = 2 and error = 'TERMINATION' then 1 end)as terminate 
+					  
+FROM  
+					  
+(select * from hes.meter_job where time_stamp >  now() - INTERVAL'8 days' DAY)AA  
+					  
+left join hes.meter_job_list BB ON AA.id=BB.job_parent_id GROUP BY AA.ID) CCC ; 
+
+
+
+-- firmware current job status
+ ---------------------------
+
+
+SELECT AA.id as parent_id, AA.job_name,  AA.child_type, BB.total totalMeters,BB.completed, 
+BB.success,BB.failed, AA.time_stamp started_time, BB.finish_time, AA.added_by 
+
+FROM 
+(select id, job_type, job_name, priority, child_type, added_by, time_stamp, 
+source from hes.meter_job where job_type= 'CONFIG_IMAGE_ACTIVATION' ) AA 
+
+LEFT JOIN
+ (select job_parent_id,count(*) as total, COUNT(CASE WHEN STATUS!=0 THEN 1 END) as completed, 
+COUNT(CASE WHEN STATUS=1 THEN 1 END) as success, 
+COUNT(CASE WHEN STATUS=2 THEN 1 END) as failed, 
+MAX(finish_time) AS finish_time from hes.meter_job_list 
+  
+where job_type= 'CONFIG_IMAGE_ACTIVATION' 
+GROUP BY job_parent_id)BB
+  
+ON AA.id=BB.job_parent_id 
+ORDER BY started_time desc;
+
+
+-- enhanced recent query (Job dashboard)
+  ---------------------------
+
+SELECT AA.id, AA.job_type, AA.job_name, AA.priority, AA.child_type, AA.added_by, AA.time_stamp started_time,
+AA.source,
+BB.total totalMeters,BB.completed, BB.success,BB.failed, BB.finish_time
+ 
+FROM 
+(select id, job_type, job_name, priority, child_type, added_by, time_stamp, source from hes.meter_job 
+order by time_stamp desc limit 100 ) AA 
+
+LEFT JOIN
+ (select job_parent_id,count(*) as total, 
+COUNT(CASE WHEN STATUS!=0 THEN 1 END) as completed,
+COUNT(CASE WHEN STATUS=1 THEN 1 END) as success, 
+COUNT(CASE WHEN STATUS=2 THEN 1 END) as failed, 
+MAX(finish_time) AS finish_time from hes.meter_job_list 
+   
+GROUP BY job_parent_id)BB
+  
+ON AA.id=BB.job_parent_id 
+order by time_stamp desc
+ 
+
+------------------------------------
+ 
+ 
+
+-- running enhanced query
+-----------------------------------------------------------------
+
+SELECT AA.id, AA.job_type, AA.job_name, AA.priority, AA.child_type, AA.added_by, AA.time_stamp started_time,
+AA.source,
+BB.total_meters,BB.completed, BB.success,BB.failed, BB.finshed_time
+ 
+FROM  
+
+(select id,job_type,job_name,priority,child_type,added_by,time_stamp,source 
+from hes.meter_job 
+order by time_stamp desc ) AA 
+
+LEFT JOIN 
+
+(select  job_parent_id, count(*) as total_meters, 
+count(case when status != 0 then 1 end) as completed, 
+count(case when status = 1 then 1 end) as success, 
+count(case when status = 2 then 1 end ) as failed, 
+max(finish_time) as finshed_time from hes.meter_job_list 
+GROUP BY job_parent_id ) BB
+on AA.id = BB.job_parent_id 
+where BB.total_meters > BB.completed 
+order by time_stamp desc
+
+
+-------------------------------------------------------------------------------
+
+
+
+
+-- exception enhanced query --------------------------------------------------------
+	
+
+SELECT AA.id, AA.job_type, AA.job_name, AA.priority, AA.child_type, AA.added_by, 
+AA.time_stamp as started_time, AA.source,
+BB.total_meters,BB.completed, 
+BB.success,BB.failed, BB.finshed_time, BB.status 
+
+FROM  
+(select id,job_type,job_name,priority,child_type,
+added_by,time_stamp,source from hes.meter_job order by time_stamp desc  ) AA
+ 
+LEFT JOIN 
+
+(select  job_parent_id, count(*) as total_meters, status,
+count(case when status != 0 then 1 end) as completed, 
+count(case when status = 1 then 1 end) as success, 
+count(case when status = 2 then 1 end ) as failed, 
+max(finish_time) as finshed_time from hes.meter_job_list  
+GROUP BY job_parent_id, status ) BB 
+
+on AA.id = BB.job_parent_id 
+where BB.status = 2 
+order by started_time desc;
+
+
+
+--------------------------------------------------------------------
+
+  5. DELETE OPERATIONS
+     *********************************************************************
+
+
+Delete from hes.plugin_dlms_key where  id = '28';
+
+
+Delete from hes.plugin_dlms_meter_settings where plugin_id = '28';
+
+
+
+--------------------------------------------------------------------
+
+  6. INSERT/UPDATE DATA TO SPECIFIC COLUMN OF THE TABLE
+     *********************************************************************
+
+insert into meter_group (dynamic_query) values('select meter from testtable where meter=''2424''')
+
+
+
+
+update meter_group set dynamic_query = 'select meter from testtable where meter=''2424''' where id=393
+
+
+--------------------------------------------------------------------
+
+  7. CREATE SEQUENCE BEFORE TABLE CREATION 
+   *********************************************************************
+
+CREATE SEQUENCE seq_system_settings_id
+
+ -- Creating autogenerative id 
+
+
+CREATE SEQUENCE seq_meter_manufacture_names_id
+
+
+
+CREATE SEQUENCE seq_data_instantenous_id
+
+
+
+
+
+
+  
+
+ 

@@ -1,0 +1,710 @@
+
+HYPERTABLE TIME SCALE CONVERSION
+****************************************
+
+
+Create extension
+--Create extension
+create extension if not exists timescaledb  ;
+
+-- Admin queries
+select * from _timescaledb_catalog.hypertable WHERE schema_name='hes'; -- Get hyper tables
+SELECT * FROM timescaledb_information.hypertable WHERE table_schema='hes';
+
+-- Contineous aggregate details
+SELECT * FROM timescaledb_information.continuous_aggregates;
+
+--Get state of contineous aggregates
+SELECT * FROM timescaledb_information.continuous_aggregate_stats;
+
+
+--Drop Chunk Policies.
+SELECT * FROM timescaledb_information.drop_chunks_policies;
+
+
+-- Compression details
+SELECT * FROM timescaledb_information.compressed_chunk_stats;
+
+
+
+--Tables to convert
+-- Finished -- data_alarm,reader_scheduler_tracker, data_block_load, comm_heartbeat,data_instantenous,data_bill, data_daily_load,data_events,  meter_job_list,meter_job, meter_job_output_temp
+
+--  
+
+-- Create or Convert into Hypertable
+
+rename to old
+
+CREATE TABLE meter_job_output_temp (LIKE meter_job_output_temp_old INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES);
+
+SELECT create_hypertable('data_instantenous_push', 'meter_time', chunk_time_interval => INTERVAL '1 day');
+
+insert into meter_job_output_temp (select * from meter_job_output_temp_old);
+--------------------------------------------------------------------------------
+
+select count(*) from hes.data_block_load where load_time > '2020-09-01 00:30:00';
+select count(*) from hes.data_block_load_old where load_time > '2020-09-01 00:30:00';
+
+
+-------------------------------------------------------------------------------------------------------------------------------
+INSERT DATA DYNAMICALLY
+************************************
+
+INSERT INTO hes.data_supply_seq (data_type,type_seq,data_time)
+(select 'INSTANTANEOUS'as data_type,id,meter_time from hes.data_instantenous where id>(select COALESCE( max(type_seq),0) from hes.data_supply_seq where data_type='INSTANTANEOUS'));
+
+INSERT INTO hes.data_supply_seq(data_type,type_seq,data_time)
+(select 'INSTANTANEOUS_PUSH'as data_type,id,meter_time from hes.data_instantenous_push where id>(select COALESCE( max(type_seq),0) from hes.data_supply_seq where data_type='INSTANTANEOUS_PUSH'));
+
+INSERT INTO hes.data_supply_seq(data_type,type_seq,data_time)
+(select 'BLOCK_LOAD'as data_type,id,load_time from hes.data_block_load where id>(select COALESCE( max(type_seq),0) from hes.data_supply_seq where data_type='BLOCK_LOAD'));
+
+INSERT INTO hes.data_supply_seq(data_type,type_seq,data_time)
+(select 'DAILY_LOAD'as data_type,id,load_time from hes.data_daily_load where id>(select COALESCE( max(type_seq),0) from hes.data_supply_seq where data_type='DAILY_LOAD'));
+
+INSERT INTO hes.data_supply_seq(data_type,type_seq,data_time)
+(select 'BILL'as data_type,id,bill_date from hes.data_bill where id>(select COALESCE( max(type_seq),0) from hes.data_supply_seq where data_type='BILL'));
+
+ INSERT INTO hes.data_supply_seq(data_type,type_seq,data_time)
+(select 'EVENTS'as data_type,id,event_time from hes.data_events where id>(select COALESCE( max(type_seq),0) from hes.data_supply_seq where data_type='EVENTS'))
+
+
+-------------------------------------------------------------------------------------------------------------------------------
+JSON AGGRIGATE / JSON BUILD OBJECT
+************************************
+
+select  json_agg(json_build_object('ot',other_attributes, 'count', jsonb_array_length(other_attributes))) from hes.data_nameplate where meter_number = '37980003778' and time_stamp = (
+select max(time_stamp) from hes.data_nameplate where meter_number = '37980003778');
+
+SAMPLE:
+
+[{"ot" : ["37980003778", "XIO37980003778", "Xiota India private Limited , Bangalore, India.", "i310-a0-V01-2020120401", "7", "D2", "(10-60)A", "2020"], "count" : 8}]
+
+
+select  json_build_object('ot',other_attributes, 'count', jsonb_array_length(other_attributes)) from hes.data_nameplate where meter_number = '37980003778' and time_stamp = (
+select max(time_stamp) from hes.data_nameplate where meter_number = '37980003778');
+
+SAMPLE:
+
+{"ot" : ["37980003778", "XIO37980003778", "Xiota India private Limited , Bangalore, India.", "i310-a0-V01-2020120401", "7", "D2", "(10-60)A", "2020"], "count" : 8}
+
+
+-------------------------------------------------------------------------------------------------------------------------------
+COLUMN SIZE 
+************************************
+
+SELECT pg_column_size(other_attributes) from hes.data_instantenous where meter_number = '37980003778'
+
+
+-------------------------------------------------------------------------------------------------------------------------------
+AVG EXECUTION COUNT (JOB WISE)
+************************************
+
+SELECT 
+COUNT(DISTINCT job_parent_id) AS id, job_type, 
+COUNT(*) as Jobs,
+COUNT(CASE WHEN status = 0 then 1 end ) AS running,
+COUNT(CASE WHEN status = 1 then 1 end ) AS completed,
+COUNT(CASE WHEN status = 2 then 1 end ) AS failed,
+AVG(CASE WHEN status=1 then (finish_time - start_time) end)  avg_exe_time,
+COUNT(DISTINCT meter_number) AS meters
+FROM hes.meter_job_list GROUP BY job_type;
+						
+						
+SELECT 
+COUNT(DISTINCT job_parent_id) AS id, job_type, 
+COUNT(*) as Jobs,
+COUNT(CASE WHEN status = 0 then 1 end ) AS running,
+COUNT(CASE WHEN status = 1 then 1 end ) AS success,
+COUNT(CASE WHEN status = 2 then 1 end ) AS failed,
+AVG(CASE WHEN status=1 then (finish_time - start_time)end)avg_exe_time,
+COUNT(DISTINCT meter_number) AS meters
+FROM hes.meter_job_list  WHERE assign_time > CURRENT_DATE - INTERVAL '30' DAY GROUP BY job_type;
+
+
+-------------------------------------------------------------------------------------------------------------------------------
+JOB TYPE WISE COUNTS (NON COMM)
+************************************
+
+
+SELECT COM.meter_number,COM.max_time FROM
+(select meter_number,max(max_time)max_time from hes.comm_data_counter_view where max_time is not null GROUP BY meter_number)COM
+WHERE COM.max_time> now() - INTERVAL '1 day'
+ 
+SELECT  AA.plugin_id,count(*)total,count(case when BB.max_time is  null then 1 end)non_comm FROM  HES.meter_master  AA
+LEFT JOIN 
+(SELECT COM.meter_number,COM.max_time FROM
+(select meter_number,max(max_time)max_time from hes.comm_data_counter_view where max_time is not null GROUP BY meter_number)COM
+WHERE COM.max_time> now() - INTERVAL '1 day')BB
+ON AA.meter_number=BB.meter_number GROUP BY AA.plugin_id
+
+
+
+SELECT  AA.sim_type,count(*)total,count(case when BB.max_time is  null then 1 end)non_comm FROM  HES.meter_master  AA
+LEFT JOIN 
+(SELECT COM.meter_number,COM.max_time FROM
+(select meter_number,max(max_time)max_time from hes.comm_data_counter_view where max_time is not null GROUP BY meter_number)COM
+WHERE COM.max_time> now() - INTERVAL '1 day')BB
+ON AA.meter_number=BB.meter_number GROUP BY AA.sim_type
+
+
+
+select AA.meter_number, BB.category from hes.meter_master AA
+INNER JOIN ( select category, meter_number from hes.data_nameplate) BB
+on AA.meter_number = BB.meter_number
+
+
+
+Select MM.sim_type, count(*) total, count( case when COM.max_time is null then 1 end ) as non_comm from hes.meter_master MM
+LEFT JOIN
+(select RR.meter_number, RR.max_time FROM
+(select meter_number, max(max_time) max_time
+from hes.comm_data_counter_view
+where max_time is not NULL
+GROUP BY  meter_number) RR
+where max_time > now() - INTERVAL '1 MINUTE') COM
+on MM.meter_number = COM.meter_number
+GROUP BY MM.sim_type
+
+
+select now()
+
+select now() - INTERVAL '1 DAY'
+
+
+
+Select MM.category, count(*) total from
+(select AA.meter_number, BB.category from hes.meter_master AA
+INNER JOIN ( select category, meter_number from hes.data_nameplate) BB
+on AA.meter_number = BB.meter_number) MM
+GROUP BY MM.category
+
+
+
+
+Select MM.manufacturer_name, count(*) total,  count( case when COM.max_time is null then 1 end ) as non_comm from
+(select AA.meter_number, BB.manufacturer_name from hes.meter_master AA
+INNER JOIN ( select manufacturer_name, meter_number from hes.data_nameplate) BB
+on AA.meter_number = BB.meter_number) MM
+LEFT JOIN
+(select RR.meter_number, RR.max_time FROM
+(select meter_number, max(max_time) max_time
+from hes.comm_data_counter_view
+where max_time is not NULL
+GROUP BY  meter_number) RR
+where max_time > now() - INTERVAL '12 Hour') COM
+on MM.meter_number = COM.meter_number
+GROUP BY MM.manufacturer_name
+
+
+
+
+Select MM.firmware, count(*) total,  count( case when COM.max_time is null then 1 end ) as non_comm from
+(select AA.meter_number, BB.firmware from hes.meter_master AA
+INNER JOIN ( select firmware, meter_number from hes.data_nameplate) BB
+on AA.meter_number = BB.meter_number) MM
+LEFT JOIN
+(select RR.meter_number, RR.max_time FROM
+(select meter_number, max(max_time) max_time
+from hes.comm_data_counter_view
+where max_time is not NULL
+GROUP BY  meter_number) RR
+where max_time > now() - INTERVAL '1 MINUTE') COM
+on MM.meter_number = COM.meter_number
+GROUP BY MM.firmware
+
+
+
+
+Select MM.year_of_manufacture, count(*) total,  count( case when COM.max_time is null then 1 end ) as non_comm from
+(select AA.meter_number, BB.year_of_manufacture from hes.meter_master AA
+INNER JOIN ( select year_of_manufacture, meter_number from hes.data_nameplate) BB
+on AA.meter_number = BB.meter_number) MM
+LEFT JOIN
+(select RR.meter_number, RR.max_time FROM
+(select meter_number, max(max_time) max_time
+from hes.comm_data_counter_view
+where max_time is not NULL
+GROUP BY  meter_number) RR
+where max_time > now() - INTERVAL '1 MINUTE') COM
+on MM.meter_number = COM.meter_number
+GROUP BY MM.year_of_manufacture
+
+
+Select MM.manufacturer_name, count(*) total,  count( case when COM.max_time is null then 1 end ) as non_comm from
+(select AA.meter_number, BB.manufacturer_name from hes.meter_master AA
+INNER JOIN ( select manufacturer_name, meter_number from hes.data_nameplate) BB
+on AA.meter_number = BB.meter_number) MM
+LEFT JOIN
+(select RR.meter_number, RR.max_time FROM
+(select meter_number, max(max_time) max_time
+from hes.comm_data_counter_view
+where max_time is not NULL
+GROUP BY  meter_number) RR
+where max_time > now() - INTERVAL '1 MINUTE') COM
+on MM.meter_number = COM.meter_number
+GROUP BY MM.manufacturer_name
+
+SELECT  DD.plugin_id, DD.total, DD.non_comm , EE.plugin_name
+from hes.plugin_dlms_key EE
+INNER JOIN
+(SELECT  AA.plugin_id,count(*)total,count(case when BB.max_time is  null then 1 end)non_comm FROM  HES.meter_master  AA
+LEFT JOIN 
+(SELECT COM.meter_number,COM.max_time FROM
+(select meter_number,max(max_time)max_time from hes.comm_data_counter_view where max_time is not null GROUP BY meter_number)COM
+WHERE COM.max_time> now() - INTERVAL '1 day')BB
+ON AA.meter_number=BB.meter_number GROUP BY AA.plugin_id) DD
+on EE.id = DD.plugin_id;
+
+
+
+-------------------------------------------------------------------------------------------------------------------------------
+QUICK REGISTER (SMART METER DISCOVERY)
+************************************
+
+
+ SELECT AA.meter_number, AA.date_of_installation, AA.latitude, AA.longitude, BB.last_comm, BB.comm_host, BB.server_name,BB.iden_source FROM  
+					        (select * from hes.meter_installation where meter_number not in (select meter_number from hes.meter_master)) AA  
+					        LEFT JOIN 
+					        (select 'Push Alarm' as iden_source , r.meter_number ,t.alarm_time as last_comm,t.comm_host, t.server_name FROM 
+					       (SELECT meter_number , MAX(id) as MaxId FROM hes.data_alarm where meter_number not in(select meter_number from hes.meter_master ) GROUP BY meter_number ) r INNER JOIN hes.data_alarm t ON t.meter_number = r.meter_number AND t.id = r.MaxId)BB 
+					        ON AA.meter_number = BB.meter_number;
+							
+------------------------------------------------------------------------------------------------------------------------
+COUNT OF TERMINATION, SUCCESS, FAILED (JOB DASHBAORD)
+************************************
+
+ SELECT count(*)jobs,count(case when running>0 then 1 end )runningJobs,
+					  count(case when running=0 then 1 end )finishedJobs,
+					  sum(total)totalMeterJobs,
+					  sum(running)runningMeterJobs,
+					  sum(excptions)exceptionMeterJobs,
+					  sum(success)successMeterJobs, 
+					  sum(terminate)terminatedMtrJobs
+					  FROM 
+					  (SELECT AA.ID as totalJobs,
+					  count(BB.status) as total,
+					  COUNT(CASE WHEN BB.status = 0 then 1 end)as running,
+					  COUNT(CASE WHEN BB.status = 2 and error != 'TERMINATION' then 1 end)as excptions,
+					  COUNT(CASE WHEN BB.status = 1 then 1 end)as success, 
+					  COUNT(CASE WHEN BB.status = 2 and error = 'TERMINATION' then 1 end )as terminate 
+					  FROM
+					  (select * from hes.meter_job where time_stamp >   now() - INTERVAL'7' DAY)AA
+					  left join hes.meter_job_list BB ON AA.id=BB.job_parent_id GROUP BY AA.ID) CCC ;
+					
+					
+					select * from hes.meter_job_list where status = 2 and error != 'TERMINATION'
+					order by assign_time DESC
+					
+					
+					select count(*) from hes.meter_job_list where status = '2' and error = 'TERMINATION' and finish_time > now() - INTERVAL '7 DAY'
+					
+					
+------------------------------------------------------------------------------------------------------------------------
+DAILY LOAD MISSING DATA
+************************************
+
+SELECT DD.meter_number,MIN(DD.start_date)start_date,MAX(DD.end_date)end_date,SUM(DD.missing)missing FROM (
+SELECT CC.meter_number,(CC.load_time-CC.diff)start_date,CC.load_time end_date,(CC.diff)missing FROM (
+SELECT meter_number,load_time, load_time - lag(load_time) OVER (ORDER BY meter_number,load_time) diff FROM (
+SELECT AA.meter_number,AA.load_time FROM (
+SELECT meter_number,CURRENT_DATE-45 load_time from hes.meter_master
+UNION ALL
+SELECT meter_number,CURRENT_DATE-1 load_time from hes.meter_master
+UNION ALL
+SELECT meter_number,load_time FROM hes.data_daily_load
+where load_time<CURRENT_DATE and load_time>=CURRENT_DATE-45 ORDER BY meter_number,load_time
+)AA GROUP BY meter_number,load_time order by meter_number,load_time
+)BB
+)CC WHERE CC.diff>1
+)DD GROUP BY DD.meter_number;
+
+
+
+					
+------------------------------------------------------------------------------------------------------------------------
+POWER OUTAGE 
+************************************
+
+-- OLD QUERY
+
+SELECT AA.meter_number,BB.latitude,BB.longitude,AA.alarm_description FROM 
+						  (SELECT DISTINCT ON(meter_number)meter_number,alarm_time,alarm_description FROM hes.data_alarm where alarm_description in('Last Gasp- Occurrence','First Breath- Restoration') 
+						  ORDER BY meter_number,alarm_time desc)AA 
+						  LEFT JOIN 
+						  (select latitude,longitude,meter_number from hes.meter_master)BB 
+						  on AA.meter_number=BB.meter_number   WHERE AA.alarm_description ='Last Gasp- Occurrence';
+	
+
+ -- MODIFIED QUERY	
+							
+SELECT NN.meter_no,NN.total, NN.data_type from (
+( SELECT BB.meter_no,count(*)as total,'power_outage' as data_type, max(BB.alarm_time) as max_alarm_time  FROM 
+( SELECT DISTINCT ON(meter_number)meter_number as meter_no,alarm_time,alarm_description,count(*)as total FROM hes.data_alarm where alarm_description in('Last Gasp- Occurrence','First Breath- Restoration') GROUP BY meter_no,alarm_time,alarm_description 
+ORDER BY meter_number,alarm_time desc )BB WHERE BB.alarm_description ='Last Gasp- Occurrence' GROUP BY BB.meter_no ) DD
+INNER JOIN
+( SELECT meter_number as m2,max(max_time)as lastcommunicated from hes.comm_data_counter_view group by m2 ) EE
+on  EE.m2 = DD.meter_no  ) NN
+where NN.max_alarm_time > NN.lastcommunicated;
+					
+					
+
+------------------------------------------------------------------------------------------------------------------------
+CREATING JSON OBJ WITH KEY VALUE PAIRS
+************************************
+
+select json_object_agg(s.event_type, s.data)
+from (
+select event_type, jsonb_array_elements(other_attributes) as data 
+from hes.data_events where id >= 3 order by id limit 4
+) s;	
+
+SAMPLE : 
+
+{ "ONDEMAND_EVENT_NON_ROLLOVER" : "2020-07-21 09:20:41", "ONDEMAND_EVENT_NON_ROLLOVER" : "251", "ONDEMAND_EVENT_VOLTAGE" : "2021-07-26 14:38:43", "ONDEMAND_EVENT_VOLTAGE" : "9" }
+
+
+------------------------------------------------------------------------------------------------------------------------
+CREATING JSON ARRAY WITH N NUMBER OF JSON OBJS 
+************************************
+
+
+select json_agg(json_build_object('data' ,t.other_attributes, 'plugin id', t.plugin_id))
+				from (select * from hes.data_events where id >= 3 order by id limit 2) t
+				
+SAMPLE :
+
+[{"data" : ["2020-07-21 09:20:41", "251"], "profile" : 2}, {"data" : ["2021-07-26 14:38:43", "9", "0.0", "0.0", "0.0", "0.0", "0.0", "226.59", "1.0", "1.0", "1.0", "441320.0", "0.0", "1375"], "profile" : 2}]				
+				
+
+------------------------------------------------------------------------------------------------------------------------
+	SEQUENCE WISE DATA SUPPLY
+************************************
+ 
+				
+				
+	-------- MODIFIED ONE (KEY VALUE PAIRS, TIME FORMAT  ) 	-----------------------	
+				
+				
+				   SELECT json_agg(json_build_object('sequenceId', u.id , 'categorySequenceId', u.type_seq  ,'category', r.category,'meterNo',r.meter_number,'dataTime', to_char (r.data_time, 'YYYY-MM-DD HH24:MI:SS' ),'data',r.data,'profile',r.plugin_id )) FROM 
+				(SELECT * from hes.data_supply_seq where id >= 27807 order by id limit 2) u 
+				LEFT JOIN 
+				( 
+				SELECT 'INSTANTANEOUS' as data_type, 'INSTANTANEOUS' as category, id, meter_number,meter_time as data_time,other_attributes as data, plugin_id from hes.data_instantenous 
+				UNION ALL 
+				SELECT 'INSTANTANEOUS_PUSH' as data_type, 'INSTANTANEOUS_PUSH' category, id, meter_number,meter_time data_time,other_attributes as data,plugin_id from hes.data_instantenous_push 
+				UNION ALL 
+				SELECT 'BLOCK_LOAD' as data_type, 'BLOCK_LOAD' category, id, meter_number,load_time data_time,other_attributes as data,plugin_id from hes.data_block_load 
+				UNION ALL 
+				SELECT 'DAILY_LOAD' as data_type, 'DAILY_LOAD' category, id, meter_number,load_time data_time,other_attributes as data,plugin_id from hes.data_daily_load 
+				UNION ALL 
+				SELECT 'BILL' as data_type, 'BILL' category, id, meter_number,bill_date data_time,other_attributes as data,plugin_id from hes.data_bill 
+				UNION ALL 
+				SELECT 'EVENTS' as data_type,REPLACE(event_type, 'ONDEMAND_', '' ) category, id, meter_number,event_time data_time,other_attributes as data,plugin_id from hes.data_events 
+				) r ON u.type_seq = r.id AND u.data_type=r.data_type;
+				
+				
+------------------------------------------------------------------------------------------------------------------------
+JSON AGG WITH FORMATED DATE TIME
+************************************				
+
+select json_agg(json_build_object('meterNo',t.meter_number,'description',t.alarm_description,'time',to_char(t.alarm_time,'YYYY-MM-DD HH24:MI:SS'))) from
+(select * from hes.data_alarm WHERE  id > 19558 order by id limit 2)t		
+
+
+SAMPLE :
+
+[{"meterNo" : "37980003364", "description" : "First Breath- Restoration", "time" : "2022-01-18 19:35:56"}, {"meterNo" : "37980003778", "description" : "Test", "time" : "2022-02-16 09:53:05"}]		
+
+
+------------------------------------------------------------------------------------------------------------------------
+LIST OF JSON AGG WITH FORMATED DATE TIME
+************************************
+
+
+SELECT json_agg(json_build_object('meterNo',t.meter_number,
+'description',t.alarm_description,'time',to_char(t.alarm_time,'YYYY-MM-DD HH24:MI:SS')
+)) FROM hes.data_alarm t WHERE id >= 19558 group by id order by id limit 10
+
+SAMPLE :
+
+[{"meterNo" : "37980003364", "description" : "First Breath- Restoration", "time" : "2022-01-18 19:35:56"}]
+[{"meterNo" : "37980003778", "description" : "Test", "time" : "2022-02-16 09:53:05"}]
+[{"meterNo" : "123012", "description" : "Test5", "time" : "2022-02-18 11:25:02"}]
+
+
+
+------------------------------------------------------------------------------------------------------------------------
+INSERT INTO A TABLE BY SELECTING DATA FROM ANOTHER TABLES 
+************************************
+
+
+INSERT INTO hes.data_supply_seq (data_type,type_seq)
+(select 'INSTANTANEOUS'as data_type,id from hes.data_instantenous where id>(select COALESCE( max(type_seq),0) from hes.data_supply_seq where data_type='INSTANTANEOUS'));
+
+INSERT INTO hes.data_supply_seq (data_type,type_seq)
+(select 'INSTANTANEOUS_PUSH'as data_type,id from hes.data_instantenous_push where id>(select COALESCE( max(type_seq),0) from hes.data_supply_seq where data_type='INSTANTANEOUS_PUSH'));
+
+INSERT INTO hes.data_supply_seq (data_type,type_seq)
+(select 'BLOCK_LOAD'as data_type,id from hes.data_block_load where id>(select COALESCE( max(type_seq),0) from hes.data_supply_seq where data_type='BLOCK_LOAD'));
+
+INSERT INTO hes.data_supply_seq (data_type,type_seq)
+(select 'DAILY_LOAD'as data_type,id from hes.data_daily_load where id>(select COALESCE( max(type_seq),0) from hes.data_supply_seq where data_type='DAILY_LOAD'));
+
+INSERT INTO hes.data_supply_seq (data_type,type_seq)
+(select 'BILL'as data_type,id from hes.data_bill where id>(select COALESCE( max(type_seq),0) from hes.data_supply_seq where data_type='BILL'));
+
+INSERT INTO hes.data_supply_seq (data_type,type_seq)
+(select 'EVENTS'as data_type,id from hes.data_events where id>(select COALESCE( max(type_seq),0) from hes.data_supply_seq where data_type='EVENTS'));
+
+------------------------------------------------------------------------------------------------------------------------
+OLD QUERY FOR DATA SEQUENCE SUPPLY API
+************************************
+
+SELECT u.id as seq_id, u.type_seq as category_seq_id, r.category,r.meter_number,r.data_time,r.data,r.profile FROM
+(SELECT * from hes.data_supply_seq where id >=1 order by id limit 10000) u
+LEFT JOIN
+(
+SELECT 'INSTANTANEOUS' as data_type, 'INSTANTANEOUS' category, id, meter_number,meter_time data_time,other_attributes as data,profile from hes.data_instantenous
+UNION ALL
+SELECT 'INSTANTANEOUS_PUSH' as data_type, 'INSTANTANEOUS_PUSH' category, id, meter_number,meter_time data_time,other_attributes as data,profile from hes.data_instantenous_push
+UNION ALL
+SELECT 'BLOCK_LOAD' as data_type, 'BLOCK_LOAD' category, id, meter_number,load_time data_time,other_attributes as data,profile from hes.data_block_load
+UNION ALL
+SELECT 'DAILY_LOAD' as data_type, 'DAILY_LOAD' category, id, meter_number,load_time data_time,other_attributes as data,profile from hes.data_daily_load
+UNION ALL
+SELECT 'BILL' as data_type, 'BILL' category, id, meter_number,bill_date data_time,other_attributes as data,profile from hes.data_bill
+UNION ALL
+SELECT 'EVENTS' as data_type,REPLACE(event_type, 'ONDEMAND_', '' ) category, id, meter_number,event_time data_time,other_attributes as data,profile from hes.data_events
+) r ON u.type_seq = r.id AND u.data_type=r.data_type;
+
+
+
+------------------------------------------------------------------------------------------------------------------------
+QUERY TO IDENTIFY HYPER TABLES FROM DB
+************************************
+
+select * from _timescaledb_catalog.hypertable WHERE schema_name='hes'
+
+
+SAMPLES :
+
+39	hes	reader_scheduler_tracker	_timescaledb_internal	_hyper_39	1	_timescaledb_internal	calculate_chunk_interval	0	1	63	
+50	hes	device_push_tracker	_timescaledb_internal	_hyper_50	1	_timescaledb_internal	calculate_chunk_interval	0	0		
+41	hes	data_instantenous	_timescaledb_internal	_hyper_41	1	_timescaledb_internal	calculate_chunk_interval	0	1	65	
+40	hes	data_block_load	_timescaledb_internal	_hyper_40	1	_timescaledb_internal	calculate_chunk_interval	0	1	92	
+43	hes	data_daily_load	_timescaledb_internal	_hyper_43	1	_timescaledb_internal	calculate_chunk_interval	0	1	67	
+
+
+------------------------------------------------------------------------------------------------------------------------
+COUNTS OF JOB TYPES 
+************************************
+
+
+SELECT count(*),  job_type from hes.meter_job GROUP BY  job_type;
+
+2	SCALAR_PUSH_INSTANTANEOUS
+1	CONFIG_SERVER_HOST
+1	ASSOCIATION_PC
+2	SCALAR_EVENTS
+2	SCALAR_DAILY_LOAD
+2	PROFILE_EVENT_NON_ROLLOVER
+14	ONDEMAND_KWH
+2	PROFILE_PUSH_ALARM
+1	CONFIG_PT_RATIO
+14	PROFILE_NAMEPLATE
+
+
+------------------------------------------------------------------------------------------------------------------------
+EXTRACTION OF TIME IN HOUR, MIN, SEC 
+************************************
+
+select job_type,concat( concat(EXTRACT(HOUR FROM (finish_time-start_time)),' Hour') , ' : ',
+concat(EXTRACT(MINUTE FROM (finish_time-start_time)),' Minute ') ,' : ',
+concat(EXTRACT(SECOND FROM (finish_time-start_time)),' Second') ) as duration from hes.meter_job_list order by job_type desc;
+
+SAMPLE :
+
+TYPE_TEST_TRANSMIT	 Hour :  Minute  :  Second
+TYPE_TEST_RELAY_TOGGLING	 Hour :  Minute  :  Second
+SCALAR_PUSH_INSTANTANEOUS	0 Hour : 0 Minute  : 33 Second
+SCALAR_INSTANTANEOUS	0 Hour : 0 Minute  : 10 Second
+SCALAR_DAILY_LOAD	0 Hour : 0 Minute  : 10 Second
+SCALAR_BLOCK_LOAD	0 Hour : 0 Minute  : 10 Second
+
+
+
+
+SELECT job_type,avg(finish_time-start_time),
+EXTRACT(HOUR FROM avg(finish_time-start_time)) AS hour,
+EXTRACT(MINUTE FROM avg(finish_time-start_time)) as minute,
+EXTRACT(SECOND from avg(finish_time-start_time)) as second
+FROM
+hes.meter_job_list group by job_type order by job_type desc
+
+
+SAMPLE :
+
+SCALAR_PUSH_INSTANTANEOUS	00:00:33	0	0	33
+SCALAR_INSTANTANEOUS	00:00:10	0	0	10
+SCALAR_EVENTS	00:00:09	0	0	9
+SCALAR_DAILY_LOAD	00:00:10	0	0	10
+SCALAR_BLOCK_LOAD	00:00:10	0	0	10
+SCALAR_BILLS	00:00:11	0	0	11
+RELAY_STATUS	00:00:04.25	0	0	4.25
+
+
+
+------------------------------------------------------------------------------------------------------------------------
+EXTRACTION OF TIME 
+************************************
+
+select job_type, avg(finish_time - start_time)avg_exe_time from hes.meter_job_list where status=1 GROUP BY job_type order by avg_exe_time desc;
+
+SAMPLE :
+
+ONDEMAND_BLOCK_LOAD	00:01:10.923077
+SCALAR_PUSH_INSTANTANEOUS	00:00:33
+ONDEMAND_EVENT_OTHER	00:00:18
+ONDEMAND_EVENT_POWER	00:00:15.6
+ONDEMAND_EVENT_TRANSACTION	00:00:13.333333
+
+
+------------------------------------------------------------------------------------------------------------------------
+EXTRACTION OF TIME IN SEC 
+************************************
+
+
+select job_type, avg(extract(epoch from (finish_time - start_time)))avg_exe_time from hes.meter_job_list where status=1 GROUP BY job_type order by avg_exe_time desc
+
+
+SAMPLE :
+
+ONDEMAND_BLOCK_LOAD	70.92307692307692
+SCALAR_PUSH_INSTANTANEOUS	33
+ONDEMAND_EVENT_OTHER	18
+ONDEMAND_EVENT_POWER	15.6
+
+------------------------------------------------------------------------------------------------------------------------
+TIME FORMAT CHANGE
+************************************
+
+
+select AA.job_type, to_char(AA.avg_exe_time, 'HH24:MI:SS')avg_exe_time from
+(select job_type, avg(finish_time - start_time)avg_exe_time from hes.meter_job_list where status=1 GROUP BY job_type order by avg_exe_time desc )AA GROUP BY AA.job_type,AA.avg_exe_time order by AA.avg_exe_time desc
+
+SAMPLE :
+
+ONDEMAND_BLOCK_LOAD	00:01:10
+SCALAR_PUSH_INSTANTANEOUS	00:00:33
+ONDEMAND_EVENT_OTHER	00:00:18
+ONDEMAND_EVENT_POWER	00:00:15
+
+------------------------------------------------------------------------------------------------------------------------
+EXTRACT JSON ARRAY/OBJECT BASED ON KEY
+************************************
+
+SELECT (meter_data::json->'instantaneous') as dataval FROM cdf_mobile_data;
+
+
+SAMPLE :
+
+{"data": ["0.0001", "0.0003", "0.0002", "-1.4000", "0.4000", "1.4000", "5988.8460", "0.4490", "5986.0020", "1.0000", "1.0000", "1.0000", "1.0000", "50.0170", "2021-06-30 14:17:38", "2021-06-24 00:00:00", "724687", "241842", "32", "10", "0", "0", "4906000.0000", "886500.0000", "2418000.0000", "6437000.0000", "0.0000", "*-*-* *:*:*", "0.0000", "*-*-* *:*:*"], "headerDisc": ["L1 Current", "L2 Current", "L3 Current", "Active Power-W", "Signed Reactive Power-VAr", "Apparent Power-VA", "L1 Voltage", "L2 Voltage", "L3 Voltage", "L1 Power Factor", "L2 Power Factor", "L3 Power factor", "Signed Power Factor", "Frequency-Hz", "Clock", "Billing Date", "Cum. Power Failure Duration", "Cum. Power On Duration", "No of Power Failures", "Cumulative billing count", "Cumulative Tamper Count", "Cum. Programming Count", "Cum. Energy-Wh(Imp)", "Cum. Energy-VArh", "Cum. Energy-VArh", "Cum. Energy-VAh(Imp)", "MD-W(Imp)", "MD-W(Imp)", "MD-VA(Imp)", "MD-VA(Imp)"], "headerObis": ["1.0.31.7.0.255", "1.0.51.7.0.255", "1.0.71.7.0.255", "1.0.1.7.0.255", "1.0.3.7.0.255", "1.0.9.7.0.255", "1.0.32.7.0.255", "1.0.52.7.0.255", "1.0.72.7.0.255", "1.0.33.7.0.255", "1.0.53.7.0.255", "1.0.73.7.0.255", "1.0.13.7.0.255", "1.0.14.7.0.255", "0.0.1.0.0.255", "0.0.0.1.2.255", "0.0.94.91.8.255", "0.0.94.91.14.255", "0.0.96.7.0.255", "0.0.0.1.0.255", "0.0.94.91.0.255", "0.0.96.2.0.255", "1.0.1.8.0.255", "1.0.5.8.0.255", "1.0.8.8.0.255", "1.0.9.8.0.255", "1.0.1.6.0.255", "1.0.1.6.0.255", "1.0.9.6.0.255", "1.0.9.6.0.255"], "columnCount": 30}
+
+
+SELECT (meter_data::json->'instantaneous') ::json->'headerDisc' as dataval FROM cdf_mobile_data; 
+
+SAMPLE :
+
+["L1 Current", "L2 Current", "L3 Current", "Active Power-W", "Signed Reactive Power-VAr", "Apparent Power-VA", "L1 Voltage", "L2 Voltage", "L3 Voltage", "L1 Power Factor", "L2 Power Factor", "L3 Power factor", "Signed Power Factor", "Frequency-Hz", "Clock", "Billing Date", "Cum. Power Failure Duration", "Cum. Power On Duration", "No of Power Failures", "Cumulative billing count", "Cumulative Tamper Count", "Cum. Programming Count", "Cum. Energy-Wh(Imp)", "Cum. Energy-VArh", "Cum. Energy-VArh", "Cum. Energy-VAh(Imp)", "MD-W(Imp)", "MD-W(Imp)", "MD-VA(Imp)", "MD-VA(Imp)"]
+
+ 
+
+SELECT (meter_data::json->'instantaneous') ::json->'data' as dataval FROM cdf_mobile_data;
+
+SAMPLE :
+
+["0.0001", "0.0003", "0.0002", "-1.4000", "0.4000", "1.4000", "5988.8460", "0.4490", "5986.0020", "1.0000", "1.0000", "1.0000", "1.0000", "50.0170", "2021-06-30 14:17:38", "2021-06-24 00:00:00", "724687", "241842", "32", "10", "0", "0", "4906000.0000", "886500.0000", "2418000.0000", "6437000.0000", "0.0000", "*-*-* *:*:*", "0.0000", "*-*-* *:*:*"]
+
+
+SELECT (meter_data::json->'block_load')::json->'data' as dataval FROM cdf_mobile_data;
+
+SELECT (meter_data::json->'daily_load')::json->'headerDisc' as dataval FROM cdf_mobile_data;
+
+SELECT (meter_data::json->'bills') FROM cdf_mobile_data;
+
+SELECT (meter_data::json->'bills')::json->'headerDisc' as dataval FROM cdf_mobile_data;
+
+SELECT (meter_data::json->'bills')::json->'data' as dataval FROM cdf_mobile_data;
+
+
+
+
+------------------------------------------------------------------------------------------------------------------------
+DATA AVAILABILITY COUNT (OVERALL DASHBOARD - BAR GRAPH)
+************************************
+
+SELECT date,totalcount,block_load_total,bill_total,daily_load_total,insta_total,event_total FROM hes.comm_data_counter_view where meter_number = '37980003778' and date >  CURRENT_DATE - INTERVAL '100' DAY and date<=now()
+
+SAMPLE :
+
+date	totalcount	block_load_total	bill_total	daily_load_total	insta_total	event_total
+2022-04-08	0	0	0	0	0	0
+2022-04-07	0	0	0	0	0	0
+
+
+
+------------------------------------------------------------------------------------------------------------------------
+DATA AVAILABILITY COUNT (OVERALL DASHBOARD - BAR GRAPH)
+************************************
+
+
+SELECT 
+COUNT(totalcount) AS totalcounts,
+COUNT(event_total)AS eventtotalcounts,
+COUNT(CASE WHEN block_load_total < 96 THEN 1 END ) AS blockload_total_count,
+COUNT(CASE WHEN daily_load_total < 1 THEN 1 END ) AS dailyload_total_count,
+COUNT(CASE WHEN insta_total < 96 THEN 1 END ) AS insta_total_count
+FROM
+(SELECT date,totalcount,block_load_total,bill_total,daily_load_total,insta_total,event_total FROM hes.comm_data_counter_view where meter_number = '37980003778' and date >  CURRENT_DATE - INTERVAL '100' DAY and date<=now()) AA
+
+
+SAMPLE :
+
+totalcounts	eventtotalcounts	blockload_total_count	dailyload_total_count	insta_total_count
+46	46	46	46	46
+
+
+------------------------------------------------------------------------------------------------------------------------
+WRONG METER TIME
+************************************
+
+
+
+-- Wrong meter time 
+select AA.meter_number,AA.server_time,AA.meter_time, to_char( AA.diff * interval '1 sec','HH24:MI:SS')as difference
+from
+(select meter_number,time_stamp as server_time,meter_time,
+EXTRACT(EPOCH FROM (time_stamp - meter_time)) as diff
+from 
+hes.data_instantenous
+where (meter_number,meter_time) in (select meter_number,max(meter_time)
+from
+hes.data_instantenous
+group by meter_number) )AA 
+where AA.diff>3 or AA.diff<-3;
+
+
+------------------------------------------------------------------------------------------------------------------------
+RECENT REGISTERED METERS
+************************************
+
+-- Recent Registered Meters 
+
+select meter_number,time_stamp 
+from hes.meter_master
+where  time_stamp >  CURRENT_DATE - INTERVAL '30' DAY and time_stamp<=now()
+ORDER BY time_stamp  DESC;
+
+

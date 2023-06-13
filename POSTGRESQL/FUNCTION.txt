@@ -1,0 +1,33 @@
+*************************
+FUNCTION CALL
+*************************
+
+select * from meter_data.findtablecount()
+
+
+**********************
+fUNCTION DEFINITION
+*********************
+
+CREATE OR REPLACE FUNCTION "meter_data"."findtablecount"()
+  RETURNS TABLE("count" text, "tablename" text) AS $BODY$
+	-- Routine body goes here...
+DECLARE
+tablecount text;
+	
+	 f record;
+BEGIN
+for f in select table_name,table_schema from information_schema.tables where table_schema='meter_data'
+    loop 
+
+		execute format('select count(*) from %I.%I',f.table_schema,f.table_name) into tablecount;
+-- RAISE NOTICE 'count of tablenaem is % and count is %', f.table_name,tablecount;
+		tablename=f.table_name;
+		count=tablecount;
+		return next;
+    end loop;
+	RETURN;
+END$BODY$
+  LANGUAGE plpgsql VOLATILE
+  COST 100
+  ROWS 1000
